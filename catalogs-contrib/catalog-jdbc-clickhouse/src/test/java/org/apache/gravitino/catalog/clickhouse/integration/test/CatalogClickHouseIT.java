@@ -18,6 +18,7 @@
  */
 package org.apache.gravitino.catalog.clickhouse.integration.test;
 
+import static org.apache.gravitino.catalog.clickhouse.ClickHouseConstants.IndexConstants.GRANULARITY;
 import static org.apache.gravitino.catalog.clickhouse.ClickHouseTablePropertiesMetadata.ENGINE.MERGETREE;
 import static org.apache.gravitino.catalog.clickhouse.ClickHouseTablePropertiesMetadata.GRAVITINO_ENGINE_KEY;
 import static org.apache.gravitino.catalog.clickhouse.ClickHouseUtils.getSortOrders;
@@ -553,6 +554,64 @@ public class CatalogClickHouseIT extends BaseIT {
                 idx ->
                     idx.type() == Index.IndexType.DATA_SKIPPING_MINMAX
                         && Arrays.deepEquals(idx.fieldNames(), new String[][] {{"amount"}})));
+  }
+
+  @Test
+  void testCreateAlterLoadDataSkippingIndexGranularityWithProperties() {
+    String table = GravitinoITUtils.genRandomName("meta_granularity_roundtrip");
+    NameIdentifier ident = NameIdentifier.of(schemaName, table);
+    Column[] cols =
+        new Column[] {
+          Column.of("id", Types.LongType.get(), "id", false, false, DEFAULT_VALUE_NOT_SET),
+          Column.of("amount", Types.DoubleType.get(), "amount"),
+          Column.of("note", Types.StringType.get(), "note")
+        };
+    Index[] createIndexes =
+        new Index[] {
+          Indexes.primary(Indexes.DEFAULT_PRIMARY_KEY_NAME, new String[][] {{"id"}}),
+          Indexes.of(
+              Index.IndexType.DATA_SKIPPING_MINMAX,
+              "idx_amount_mm",
+              new String[][] {{"amount"}},
+              Map.of(GRANULARITY, "9"))
+        };
+
+    TableCatalog tableCatalog = catalog.asTableCatalog();
+    tableCatalog.createTable(
+        ident,
+        cols,
+        "granularity roundtrip",
+        createProperties(),
+        Transforms.EMPTY_TRANSFORM,
+        Distributions.NONE,
+        getSortOrders("id"),
+        createIndexes);
+
+    Table loaded = tableCatalog.loadTable(ident);
+    Index minmaxIndex =
+        Arrays.stream(loaded.index())
+            .filter(idx -> Objects.equals("idx_amount_mm", idx.name()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("idx_amount_mm should exist"));
+    Assertions.assertEquals(Index.IndexType.DATA_SKIPPING_MINMAX, minmaxIndex.type());
+    Assertions.assertEquals("9", minmaxIndex.properties().get(GRANULARITY));
+
+    tableCatalog.alterTable(
+        ident,
+        TableChange.addIndex(
+            Index.IndexType.DATA_SKIPPING_BLOOM_FILTER,
+            "idx_note_bf",
+            new String[][] {{"note"}},
+            Map.of(GRANULARITY, "7")));
+
+    loaded = tableCatalog.loadTable(ident);
+    Index bloomFilterIndex =
+        Arrays.stream(loaded.index())
+            .filter(idx -> Objects.equals("idx_note_bf", idx.name()))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("idx_note_bf should exist"));
+    Assertions.assertEquals(Index.IndexType.DATA_SKIPPING_BLOOM_FILTER, bloomFilterIndex.type());
+    Assertions.assertEquals("7", bloomFilterIndex.properties().get(GRANULARITY));
   }
 
   @Test
